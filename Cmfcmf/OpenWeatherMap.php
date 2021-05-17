@@ -25,9 +25,12 @@ use Cmfcmf\OpenWeatherMap\Exception as OWMException;
 use Cmfcmf\OpenWeatherMap\NotFoundException as OWMNotFoundException;
 use Cmfcmf\OpenWeatherMap\UVIndex;
 use Cmfcmf\OpenWeatherMap\WeatherForecast;
+use Cmfcmf\OpenWeatherMap\OneCall\ForecastFactory;
+use Cmfcmf\OpenWeatherMap\OneCall\HistoricalFactory;
 use Psr\Cache\CacheItemPoolInterface;
 use Psr\Http\Client\ClientInterface;
 use Psr\Http\Message\RequestFactoryInterface;
+use DateTime;
 
 /**
  * Main class for the OpenWeatherMap-PHP-API. Only use this class.
@@ -36,6 +39,10 @@ use Psr\Http\Message\RequestFactoryInterface;
  */
 class OpenWeatherMap
 {
+
+    const UNIT_METRIC = 'metric';
+    const UNIT_IMPERIAL = 'imperial';
+
     /**
      * The copyright notice. This is no official text, it was created by
      * following the guidelines at http://openweathermap.org/copyright.
@@ -73,6 +80,16 @@ class OpenWeatherMap
      * @var string The basic api url to fetch air pollution data from.
      */
     private $airPollutionUrl = 'https://api.openweathermap.org/pollution/v1/';
+
+    /**
+     * @var string The one call api to fetch current weather.
+     */
+    private $oneCallUrl = "https://api.openweathermap.org/data/2.5/onecall?";
+
+    /**
+     * @var string The one call api url to fetch historical data.
+     */
+    private $oneCallTimeMachineUrl = "https://api.openweathermap.org/data/2.5/onecall/timemachine?";
 
     /**
      * @var CacheItemPoolInterface|null $cache The cache to use.
@@ -181,7 +198,7 @@ class OpenWeatherMap
      *
      * @api
      */
-    public function getWeather($query, $units = 'imperial', $lang = 'en', $appid = '')
+    public function getWeather($query, $units = self::UNIT_IMPERIAL, $lang = 'en', $appid = '')
     {
         $answer = $this->getRawWeatherData($query, $units, $lang, $appid, 'xml');
         $xml = $this->parseXML($answer);
@@ -204,7 +221,7 @@ class OpenWeatherMap
      *
      * @api
      */
-    public function getWeatherGroup($ids, $units = 'imperial', $lang = 'en', $appid = '')
+    public function getWeatherGroup($ids, $units = self::UNIT_IMPERIAL, $lang = 'en', $appid = '')
     {
         $answer = $this->getRawWeatherGroupData($ids, $units, $lang, $appid);
         $json = $this->parseJson($answer);
@@ -228,7 +245,7 @@ class OpenWeatherMap
      *
      * @api
      */
-    public function getWeatherForecast($query, $units = 'imperial', $lang = 'en', $appid = '', $days = 1)
+    public function getWeatherForecast($query, $units = self::UNIT_IMPERIAL, $lang = 'en', $appid = '', $days = 1)
     {
         if ($days <= 5) {
             $answer = $this->getRawHourlyForecastData($query, $units, $lang, $appid, 'xml');
@@ -258,7 +275,7 @@ class OpenWeatherMap
      *
      * @api
      */
-    public function getDailyWeatherForecast($query, $units = 'imperial', $lang = 'en', $appid = '', $days = 1)
+    public function getDailyWeatherForecast($query, $units = self::UNIT_IMPERIAL, $lang = 'en', $appid = '', $days = 1)
     {
         if ($days > 16) {
             throw new \InvalidArgumentException('Error: forecasts are only available for the next 16 days. $days must be 16 or lower.');
@@ -325,8 +342,8 @@ class OpenWeatherMap
      *
      * @param float     $lat   The location's latitude.
      * @param float     $lon   The location's longitude.
-     * @param \DateTime $start Starting point of time period.
-     * @param \DateTime $end   Final point of time period.
+     * @param DateTime $start Starting point of time period.
+     * @param DateTime $end   Final point of time period.
      *
      * @throws OpenWeatherMap\Exception  If OpenWeatherMap returns an error.
      * @throws \InvalidArgumentException If an argument error occurs.
@@ -388,6 +405,27 @@ class OpenWeatherMap
         }
     }
 
+
+    public function getOneCallHistoricalWeather(array $query, DateTime $datetime, $units = self::UNIT_IMPERIAL, $lang = 'en', $appid = '')
+    {
+        $answer = $this->getRawOneCallHistoricalWeatherData($query, $datetime, $units, $lang, $appid);
+        $json = $this->parseJson($answer);
+
+        $factory = new HistoricalFactory();
+        return $factory->factory($json, $units);
+    }
+
+
+    public function getOneCallForecastWeather(array $query, $units = self::UNIT_IMPERIAL, array $exclude = [], $lang = 'en', $appid = '')
+    {
+        $answer = $this->getRawOneCallForecastWeatherData($query, $units, $exclude, $lang, $appid);
+        $json = $this->parseJson($answer);
+        
+        $factory = new ForecastFactory();
+        return $factory->factory($json, $units);
+
+    }
+
     /**
      * Directly returns the xml/json/html string returned by OpenWeatherMap for the current weather.
      *
@@ -403,9 +441,14 @@ class OpenWeatherMap
      *
      * @api
      */
-    public function getRawWeatherData($query, $units = 'imperial', $lang = 'en', $appid = '', $mode = 'xml')
+    public function getRawWeatherData($query, $units = self::UNIT_IMPERIAL, $lang = 'en', $appid = '', $mode = 'xml')
     {
-        $url = $this->buildUrl($query, $units, $lang, $appid, $mode, $this->weatherUrl);
+
+        $url = $this->buildUrl($query, [
+            'units' => $units,
+            'lang' => $lang,
+            'mode' => $mode,
+        ], $this->weatherUrl, $appid);
 
         return $this->cacheOrFetchResult($url);
     }
@@ -425,7 +468,13 @@ class OpenWeatherMap
      */
     public function getRawWeatherGroupData($ids, $units = 'imperial', $lang = 'en', $appid = '')
     {
-        $url = $this->buildUrl($ids, $units, $lang, $appid, 'json', $this->weatherGroupUrl);
+
+        $url = $this->buildUrl($ids, [
+            'units' => $units,
+            'lang' => $lang,
+            'mode' => 'json',
+        ], $this->weatherGroupUrl, $appid);
+
 
         return $this->cacheOrFetchResult($url);
     }
@@ -447,7 +496,12 @@ class OpenWeatherMap
      */
     public function getRawHourlyForecastData($query, $units = 'imperial', $lang = 'en', $appid = '', $mode = 'xml')
     {
-        $url = $this->buildUrl($query, $units, $lang, $appid, $mode, $this->weatherHourlyForecastUrl);
+
+        $url = $this->buildUrl($query, [
+            'units' => $units,
+            'lang' => $lang,
+            'mode' => $mode,
+        ], $this->weatherHourlyForecastUrl, $appid);
 
         return $this->cacheOrFetchResult($url);
     }
@@ -475,7 +529,14 @@ class OpenWeatherMap
         if ($cnt > 16) {
             throw new \InvalidArgumentException('$cnt must be 16 or lower!');
         }
-        $url = $this->buildUrl($query, $units, $lang, $appid, $mode, $this->weatherDailyForecastUrl) . "&cnt=$cnt";
+
+        $url = $this->buildUrl($query, [
+            'units' => $units,
+            'lang' => $lang,
+            'mode' => $mode,
+            'cnt' =>  $cnt,
+        ], $this->weatherDailyForecastUrl, $appid);
+
 
         return $this->cacheOrFetchResult($url);
     }
@@ -487,8 +548,8 @@ class OpenWeatherMap
      * @param float     $lat   The location's latitude.
      * @param float     $lon   The location's longitude.
      * @param int       $cnt   Number of returned days (only allowed for 'forecast' data).
-     * @param \DateTime $start Starting point of time period (only allowed and required for 'historic' data).
-     * @param \DateTime $end   Final point of time period (only allowed and required for 'historic' data).
+     * @param DateTime $start Starting point of time period (only allowed and required for 'historic' data).
+     * @param DateTime $end   Final point of time period (only allowed and required for 'historic' data).
      *
      * @return bool|string Returns the fetched data.
      *
@@ -505,10 +566,10 @@ class OpenWeatherMap
         if (isset($cnt) && (!is_int($cnt) || $cnt > 8 || $cnt < 1)) {
             throw new \InvalidArgumentException('$cnt must be an int between 1 and 8');
         }
-        if (isset($start) && !$start instanceof \DateTime) {
+        if (isset($start) && !$start instanceof DateTime) {
             throw new \InvalidArgumentException('$start must be an instance of \DateTime');
         }
-        if (isset($end) && !$end instanceof \DateTime) {
+        if (isset($end) && !$end instanceof DateTime) {
             throw new \InvalidArgumentException('$end must be an instance of \DateTime');
         }
         if ($mode === 'current' && (isset($start) || isset($end) || isset($cnt))) {
@@ -557,6 +618,33 @@ class OpenWeatherMap
         }
     }
 
+
+    public function getRawOneCallHistoricalWeatherData($query, DateTime $datetime, $units = 'imperial', $lang = 'en', $appid = '')
+    {
+        $url = $this->buildUrl($query, [
+            'units' => $units,
+            'lang' => $lang,
+            'mode' => 'json',
+            'dt' => $this->formatDateTime($datetime),
+        ], $this->oneCallTimeMachineUrl, $appid);
+
+
+        return $this->cacheOrFetchResult($url);
+    }
+
+
+    public function getRawOneCallForecastWeatherData($query, $units = 'imperial', array $exclude = [], $lang = 'en', $appid = '')
+    {
+        $url = $this->buildUrl($query, [
+            'units' => $units,
+            'lang' => $lang,
+            'mode' => 'json',
+            'exclude' => implode(',', $exclude),
+        ], $this->oneCallUrl, $appid);
+
+        return $this->cacheOrFetchResult($url);
+    }
+
     /**
      * Returns whether or not the last result was fetched from the cache.
      *
@@ -595,7 +683,7 @@ class OpenWeatherMap
             if (false !== strpos($result, 'not found') && $response->getStatusCode() === 404) {
                 throw new OWMNotFoundException();
             }
-            throw new OWMException('OpenWeatherMap returned a response with status code ' . $response->getStatusCode() . ' and the following content `'. $result . '`');
+            throw new OWMException('OpenWeatherMap returned a response with status code ' . $response->getStatusCode() . ' and the following content `' . $result . '`');
         }
 
         if ($this->cache !== null) {
@@ -611,22 +699,21 @@ class OpenWeatherMap
     /**
      * Build the url to fetch weather data from.
      *
-     * @param        $query
-     * @param        $units
-     * @param        $lang
-     * @param        $appid
-     * @param        $mode
-     * @param string $url   The url to prepend.
+     * @param mixed         $query
+     * @param array         $queryParams
+     * @param string        $url   The url to prepend.
+     * @param string|null   $appid
      *
      * @return bool|string The fetched url, false on failure.
      */
-    private function buildUrl($query, $units, $lang, $appid, $mode, $url)
+    private function buildUrl($query, array $queryParams, string $url, $appid = '')
     {
         $queryUrl = $this->buildQueryUrlParameter($query);
 
-        $url = $url."$queryUrl&units=$units&lang=$lang&mode=$mode&APPID=";
-        $url .= empty($appid) ? $this->apiKey : $appid;
+        $queryParams = array_merge($queryParams, $queryUrl);
+        $queryParams['APPID'] = $appid ?: $this->getApiKey();
 
+        return rtrim($url, '?') . '?' . http_build_query($queryParams);
         return $url;
     }
 
@@ -635,12 +722,12 @@ class OpenWeatherMap
      * @param float              $lat           The location's latitude.
      * @param float              $lon           The location's longitude.
      * @param int                $cnt           Number of returned days.
-     * @param \DateTime          $start         Starting point of time period.
-     * @param \DateTime          $end           Final point of time period.
+     * @param DateTime          $start         Starting point of time period.
+     * @param DateTime          $end           Final point of time period.
      *
      * @return string
      */
-    private function buildUVIndexUrl($mode, $lat, $lon, $cnt = null, \DateTime $start = null, \DateTime $end = null)
+    private function buildUVIndexUrl($mode, $lat, $lon, $cnt = null, DateTime $start = null, DateTime $end = null)
     {
         $params = array(
             'appid' => $this->apiKey,
@@ -677,20 +764,23 @@ class OpenWeatherMap
      *
      * @throws \InvalidArgumentException If the query parameter is invalid.
      */
-    private function buildQueryUrlParameter($query)
+    private function buildQueryUrlParameter($query): array
     {
         switch ($query) {
             case is_array($query) && isset($query['lat']) && isset($query['lon']) && is_numeric($query['lat']) && is_numeric($query['lon']):
-                return "lat={$query['lat']}&lon={$query['lon']}";
+                return [
+                    'lat' => $query['lat'],
+                    'lon' => $query['lon'],
+                ];
             case is_array($query) && is_numeric($query[0]):
-                return 'id='.implode(',', $query);
+                return ['id' => implode(',', $query)];
             case is_numeric($query):
-                return "id=$query";
+                return ['id' => $query];
             case is_string($query) && strpos($query, 'zip:') === 0:
                 $subQuery = str_replace('zip:', '', $query);
-                return 'zip='.urlencode($subQuery);
+                return ['zip' => $subQuery];
             case is_string($query):
-                return 'q='.urlencode($query);
+                return ['q' => $query];
             default:
                 throw new \InvalidArgumentException('Error: $query has the wrong format. See the documentation of OpenWeatherMap::getWeather() to read about valid formats.');
         }
@@ -735,7 +825,7 @@ class OpenWeatherMap
                 $this->json_last_error_msg() . '". The retrieved json was: ' . $answer);
         }
         if (isset($json->message)) {
-            throw new OWMException('An error occurred: '. $json->message);
+            throw new OWMException('An error occurred: ' . $json->message);
         }
 
         return $json;
@@ -758,5 +848,11 @@ class OpenWeatherMap
 
         $error = json_last_error();
         return isset($ERRORS[$error]) ? $ERRORS[$error] : 'Unknown error';
+    }
+
+
+    private function formatDateTime(DateTime $dateTime): string
+    {
+        return $dateTime->format('U');
     }
 }
